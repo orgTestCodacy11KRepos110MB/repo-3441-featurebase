@@ -15,9 +15,6 @@ import (
 	"github.com/featurebasedb/featurebase/v3/sql3/parser"
 	"github.com/featurebasedb/featurebase/v3/sql3/planner/types"
 	goerrors "github.com/pkg/errors"
-
-
-
 )
 
 // compileBulkInsertStatement compiles a BULK INSERT statement into a
@@ -212,6 +209,15 @@ func (p *ExecutionPlanner) analyzeBulkInsertStatement(stmt *parser.BulkInsertSta
 		for _, im := range stmt.MapList {
 			if !(im.MapExpr.IsLiteral() && typeIsString(im.MapExpr.DataType())) {
 				return sql3.NewErrStringLiteral(im.MapExpr.Pos().Line, im.MapExpr.Pos().Column)
+			}
+		}
+	case "PARQUET":
+		// for parquet the map expressions need to be integer values
+		// that represent the column indexes in the schmema - we
+		// mak want to support column names too
+		for _, im := range stmt.MapList {
+			if !(im.MapExpr.IsLiteral() && typeIsInteger(im.MapExpr.DataType())) {
+				return sql3.NewErrIntegerLiteral(im.MapExpr.Pos().Line, im.MapExpr.Pos().Column)
 			}
 		}
 

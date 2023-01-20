@@ -22,6 +22,11 @@ import (
 	"github.com/featurebasedb/featurebase/v3/sql3"
 	"github.com/featurebasedb/featurebase/v3/sql3/parser"
 	"github.com/featurebasedb/featurebase/v3/sql3/planner/types"
+	uuid "github.com/satori/go.uuid"
+
+	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v10/parquet/file"
+	"github.com/apache/arrow/go/v10/parquet/pqarrow"
 )
 
 type bulkInsertMapColumn struct {
@@ -155,6 +160,17 @@ func (p *PlanOpBulkInsert) Iterator(ctx context.Context, row types.Row) (types.R
 			tableName: p.tableName,
 			options:   p.options,
 			sourceIter: &bulkInsertSourceNDJsonRowIter{
+				planner: p.planner,
+				options: p.options,
+			},
+		}, nil
+
+	case "PARQUET":
+		return &bulkInsertParquetRowIter{
+			planner:   p.planner,
+			tableName: p.tableName,
+			options:   p.options,
+			sourceIter: &bulkInsertSourceParquetRowIter{
 				planner: p.planner,
 				options: p.options,
 			},
@@ -386,6 +402,8 @@ func (i *bulkInsertCSVRowIter) Next(ctx context.Context) (types.Row, error) {
 	}
 	return nil, types.ErrNoMoreRows
 }
+
+// ------- NDJSON
 
 type bulkInsertSourceNDJsonRowIter struct {
 	planner *ExecutionPlanner
@@ -868,6 +886,254 @@ func processColumnValue(rawValue interface{}, targetType parser.ExprDataType) (t
 	default:
 		return nil, sql3.NewErrInternalf("unhandled type '%T'", targetType)
 	}
+}
+
+// -------- PARQUET
+
+type bulkInsertSourceParquetRowIter struct {
+	planner *ExecutionPlanner
+	options *bulkInsertOptions
+	reader  pqarrow.RecordReader
+
+	closeFunc func()
+
+	mapValues []int64
+
+	hasStarted *struct{}
+}
+
+var _ types.RowIterator = (*bulkInsertSourceParquetRowIter)(nil)
+
+func (i *bulkInsertSourceParquetRowIter) Next(ctx context.Context) (types.Row, error) {
+
+	if i.hasStarted == nil {
+
+		i.hasStarted = &struct{}{}
+
+		// pre-calculate map values since these represent column offsets and will be constant for csv
+		i.mapValues = []int64{}
+		for _, mc := range i.options.mapExpressions {
+			// this is csv so map value will be an int
+			rawMapValue, err := mc.expr.Evaluate(nil)
+			if err != nil {
+				return nil, err
+			}
+			mapValue, ok := rawMapValue.(int64)
+			if !ok {
+				return nil, sql3.NewErrInternalf("unexpected type for mapValue '%T'", rawMapValue)
+			}
+			i.mapValues = append(i.mapValues, mapValue)
+		}
+
+		fileName := ""
+		fileUUID, err := uuid.NewV4()
+		if err != nil {
+			return nil, err
+		}
+		tempFileName := fmt.Sprintf("fb-parquet-%s", fileUUID.String())
+
+		switch strings.ToUpper(i.options.input) {
+		case "FILE":
+			fileName = i.options.sourceData
+
+		case "URL":
+			response, err := http.Get(i.options.sourceData)
+			if err != nil {
+				return nil, err
+			}
+			defer response.Body.Close()
+			if response.StatusCode != 200 {
+				return nil, sql3.NewErrReadingDatasource(0, 0, i.options.sourceData, fmt.Sprintf("unexpected response %d", response.StatusCode))
+			}
+
+			tfd, err := os.CreateTemp("", tempFileName)
+			if err != nil {
+				return nil, err
+			}
+			_, err = io.Copy(tfd, response.Body)
+			if err != nil {
+				return nil, err
+			}
+			fileName = tempFileName
+
+		case "STREAM":
+			return nil, sql3.NewErrInternalf("stream input type no supported for parquet source type")
+
+		default:
+			return nil, sql3.NewErrInternalf("unexpected input specification type '%s'", i.options.input)
+		}
+
+		fd, err := os.Open(fileName)
+		if err != nil {
+			return nil, err
+		}
+
+		i.closeFunc = func() {
+			fd.Close()
+			os.Remove(tempFileName)
+		}
+
+		pf, err := file.NewParquetReader(fd)
+		if err != nil {
+			return nil, err
+		}
+		pool := memory.NewGoAllocator()
+		reader, err := pqarrow.NewFileReader(pf, pqarrow.ArrowReadProperties{}, pool)
+		if err != nil {
+			return nil, err
+		}
+		recReader, err := reader.GetRecordReader(ctx, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		i.reader = recReader
+
+		// i.csvReader.LazyQuotes = true
+		// i.csvReader.TrimLeadingSpace = true
+		// // skip header row if necessary
+		// if i.options.hasHeaderRow {
+		// 	_, err := i.csvReader.Read()
+		// 	if err == io.EOF {
+		// 		return nil, types.ErrNoMoreRows
+		// 	} else if err != nil {
+		// 		return nil, err
+		// 	}
+		// }
+	}
+
+	rec, err := i.reader.Read()
+	if err == io.EOF {
+		return nil, types.ErrNoMoreRows
+	} else if err != nil {
+		return nil, sql3.NewErrReadingDatasource(0, 0, i.options.sourceData, fmt.Sprintf("parquet read error: %s", err.Error()))
+	}
+
+	// now we do the mapping to the output row
+	result := make([]interface{}, len(i.options.mapExpressions))
+	for idx := range i.options.mapExpressions {
+		mapExpressionResult := i.mapValues[idx]
+		if !(mapExpressionResult >= 0 && int(mapExpressionResult) < len(rec.Columns())) {
+			return nil, sql3.NewErrMappingFromDatasource(0, 0, i.options.sourceData, fmt.Sprintf("map index %d out of range", mapExpressionResult))
+		}
+		var evalValue string = ""
+		// evalValue := rec[mapExpressionResult]
+
+		mapColumn := i.options.mapExpressions[idx]
+		switch mapColumn.colType.(type) {
+		case *parser.DataTypeID, *parser.DataTypeInt:
+			intVal, err := strconv.ParseInt(evalValue, 10, 64)
+			if err != nil {
+				return nil, sql3.NewErrTypeConversionOnMap(0, 0, evalValue, mapColumn.colType.TypeDescription())
+			}
+			result[idx] = intVal
+
+		case *parser.DataTypeIDSet:
+			intVal, err := strconv.ParseInt(evalValue, 10, 64)
+			if err != nil {
+				return nil, sql3.NewErrTypeConversionOnMap(0, 0, evalValue, mapColumn.colType.TypeDescription())
+			}
+			result[idx] = []int64{intVal}
+
+		case *parser.DataTypeStringSet:
+			result[idx] = []string{evalValue}
+
+		case *parser.DataTypeTimestamp:
+			intVal, err := strconv.ParseInt(evalValue, 10, 64)
+			if err != nil {
+				if tm, err := time.ParseInLocation(time.RFC3339Nano, evalValue, time.UTC); err == nil {
+					result[idx] = tm
+				} else if tm, err := time.ParseInLocation(time.RFC3339, evalValue, time.UTC); err == nil {
+					result[idx] = tm
+				} else if tm, err := time.ParseInLocation("2006-01-02", evalValue, time.UTC); err == nil {
+					result[idx] = tm
+				} else {
+					return nil, sql3.NewErrTypeConversionOnMap(0, 0, evalValue, mapColumn.colType.TypeDescription())
+				}
+			}
+			result[idx] = time.UnixMilli(intVal).UTC()
+
+		case *parser.DataTypeString:
+			result[idx] = evalValue
+
+		case *parser.DataTypeBool:
+			bval, err := strconv.ParseBool(evalValue)
+			if err != nil {
+				return nil, sql3.NewErrTypeConversionOnMap(0, 0, evalValue, mapColumn.colType.TypeDescription())
+			}
+			result[idx] = bval
+
+		case *parser.DataTypeDecimal:
+			dval, err := pql.ParseDecimal(evalValue)
+			if err != nil {
+				return nil, sql3.NewErrTypeConversionOnMap(0, 0, evalValue, mapColumn.colType.TypeDescription())
+			}
+			result[idx] = dval
+
+		default:
+			return nil, sql3.NewErrInternalf("unhandled type '%T'", mapColumn.colType)
+		}
+	}
+	return result, nil
+}
+
+func (i *bulkInsertSourceParquetRowIter) Close(ctx context.Context) {
+	if i.closeFunc != nil {
+		i.closeFunc()
+	}
+}
+
+type bulkInsertParquetRowIter struct {
+	planner   *ExecutionPlanner
+	tableName string
+	options   *bulkInsertOptions
+	linesRead int
+
+	currentBatch [][]interface{}
+
+	sourceIter *bulkInsertSourceParquetRowIter
+}
+
+var _ types.RowIterator = (*bulkInsertParquetRowIter)(nil)
+
+func (i *bulkInsertParquetRowIter) Next(ctx context.Context) (types.Row, error) {
+	defer i.sourceIter.Close(ctx)
+	for {
+		row, err := i.sourceIter.Next(ctx)
+		if err != nil && err != types.ErrNoMoreRows {
+			return nil, err
+		}
+		if err == types.ErrNoMoreRows {
+			break
+		}
+		i.linesRead++
+
+		if i.currentBatch == nil {
+			i.currentBatch = make([][]interface{}, 0)
+		}
+		i.currentBatch = append(i.currentBatch, row)
+		if len(i.currentBatch) >= i.options.batchSize {
+			err := processBatch(ctx, i.planner, i.tableName, i.currentBatch, i.options)
+			if err != nil {
+				return nil, err
+			}
+			i.currentBatch = nil
+			// update the counter for bulk insert batches
+			pilosa.PerfCounterSQLBulkInsertBatchesSec.Add(1)
+		}
+		if i.options.rowsLimit > 0 && i.linesRead >= i.options.rowsLimit {
+			break
+		}
+	}
+	if len(i.currentBatch) > 0 {
+		err := processBatch(ctx, i.planner, i.tableName, i.currentBatch, i.options)
+		if err != nil {
+			return nil, err
+		}
+		i.currentBatch = nil
+		// update the counter for bulk insert batches
+		pilosa.PerfCounterSQLBulkInsertBatchesSec.Add(1)
+	}
+	return nil, types.ErrNoMoreRows
 }
 
 func processBatch(ctx context.Context, planner *ExecutionPlanner, tableName string, currentBatch [][]interface{}, options *bulkInsertOptions) error {
