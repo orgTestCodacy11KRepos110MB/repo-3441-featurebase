@@ -186,6 +186,35 @@ func (p *ExecutionPlanner) analyzeCallExpression(call *parser.Call, scope parser
 		// return the data type of the referenced column
 		call.ResultDataType = parser.NewDataTypeDecimal(6)
 
+	case "VAR":
+		// can't do this on a *
+		if call.Star.IsValid() && len(call.Args) == 0 {
+			return nil, sql3.NewErrExpectedColumnReference(call.Star.Line, call.Star.Column)
+		}
+
+		if len(call.Args) != 1 {
+			return nil, sql3.NewErrCallParameterCountMismatch(call.Rparen.Line, call.Rparen.Column, call.Name.Name, 1, len(call.Args))
+		}
+
+		// first arg should be a qualified ref
+		ref, ok := call.Args[0].(*parser.QualifiedRef)
+		if !ok {
+			return nil, sql3.NewErrExpectedColumnReference(call.Args[0].Pos().Line, call.Args[0].Pos().Column)
+		}
+
+		// can't do this on _id
+		if strings.EqualFold(ref.Column.Name, "_id") {
+			return nil, sql3.NewErrIdColumnNotValidForAggregateFunction(call.Args[0].Pos().Line, call.Args[0].Pos().Column, call.Name.Name)
+		}
+
+		// make sure the ref is the right type
+		if !(typeIsInteger(ref.DataType()) || typeIsDecimal(ref.DataType()) || typeIsTimestamp(ref.DataType())) {
+			return nil, sql3.NewErrIntOrDecimalOrTimestampExpressionExpected(ref.Table.NamePos.Line, ref.Table.NamePos.Column)
+		}
+
+		// return the data type of the referenced column
+		call.ResultDataType = parser.NewDataTypeDecimal(6)
+
 	case "MIN", "MAX":
 		// can't do an min/max on a *
 		if call.Star.IsValid() && len(call.Args) == 0 {

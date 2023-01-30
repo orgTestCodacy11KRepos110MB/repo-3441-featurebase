@@ -2771,6 +2771,10 @@ func (p *ExecutionPlanner) compileCallExpr(expr *parser.Call) (_ types.PlanExpre
 		agg := newCorrPlanExpression(args[0], args[1], expr.ResultDataType)
 		return agg, nil
 
+	case "VAR":
+		agg := newVarPlanExpression(args[0], expr.ResultDataType)
+		return agg, nil
+
 	case "MIN":
 		agg := newMinPlanExpression(args[0], expr.ResultDataType)
 		return agg, nil

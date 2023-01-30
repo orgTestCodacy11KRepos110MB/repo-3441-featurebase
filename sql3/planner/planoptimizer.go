@@ -638,8 +638,8 @@ func tryToReplaceGroupByWithPQLAggregate(ctx context.Context, a *ExecutionPlanne
 
 				// if the aggregate is not PQL-able bail
 				for _, agg := range thisNode.Aggregates {
-					_, ok := agg.(*corrPlanExpression)
-					if ok {
+					switch agg.(type) {
+					case *varPlanExpression, *corrPlanExpression:
 						return thisNode, true, nil
 					}
 				}
@@ -809,8 +809,8 @@ func tryToReplaceGroupByWithPQLGroupBy(ctx context.Context, a *ExecutionPlanner,
 
 				// if the aggregate is not PQL-able bail
 				for _, agg := range thisNode.Aggregates {
-					_, ok := agg.(*corrPlanExpression)
-					if ok {
+					switch agg.(type) {
+					case *varPlanExpression, *corrPlanExpression:
 						return thisNode, true, nil
 					}
 				}

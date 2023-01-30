@@ -1079,6 +1079,150 @@ func (n *corrPlanExpression) WithChildren(children ...types.PlanExpression) (typ
 	return newCorrPlanExpression(children[0], children[1], n.returnDataType), nil
 }
 
+// aggregator for VAR()
+type aggregateVar struct {
+	expr *varPlanExpression
+
+	// to calculate mean
+	n   int64
+	sum float64
+
+	// we need to hang on to the values
+	// TODO(pok) - will need to spill these to disk for big result sets
+	values []float64
+}
+
+func NewAggVarBuffer(child *varPlanExpression) *aggregateVar {
+	return &aggregateVar{
+		expr:   child,
+		values: make([]float64, 0),
+	}
+}
+
+func (m *aggregateVar) Update(ctx context.Context, row types.Row) error {
+	v, err := m.expr.arg.Evaluate(row)
+	if err != nil {
+		return err
+	}
+
+	// skip if nil
+	if v == nil {
+		return nil
+	}
+
+	var val float64
+
+	switch dataType := m.expr.arg.Type().(type) {
+	case *parser.DataTypeDecimal:
+		thisVal, ok := v.(pql.Decimal)
+		if !ok {
+			return sql3.NewErrInternalf("unexpected type conversion '%T'", v)
+		}
+
+		val = thisVal.Float64()
+
+	case *parser.DataTypeInt:
+		thisVal, ok := v.(int64)
+		if !ok {
+			return sql3.NewErrInternalf("unexpected type conversion '%T'", v)
+		}
+
+		val = float64(thisVal)
+
+	default:
+		return sql3.NewErrInternalf("unhandled aggregate expression datatype '%T'", dataType)
+	}
+
+	m.sum += val
+	m.n += 1
+	m.values = append(m.values, val)
+
+	return nil
+}
+
+func (m *aggregateVar) Eval(ctx context.Context) (interface{}, error) {
+
+	mean := m.sum / float64(m.n)
+
+	var variance float64
+	for _, v := range m.values {
+		variance += (v - mean) * (v - mean)
+	}
+
+	variance = variance / float64(m.n)
+
+	d, err := pql.FromFloat64WithScale(variance, 6)
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// varPlanExpression handles VAR() - variance
+type varPlanExpression struct {
+	arg            types.PlanExpression
+	returnDataType parser.ExprDataType
+}
+
+var _ types.Aggregable = (*percentilePlanExpression)(nil)
+
+func newVarPlanExpression(arg types.PlanExpression, returnDataType parser.ExprDataType) *varPlanExpression {
+	return &varPlanExpression{
+		arg:            arg,
+		returnDataType: returnDataType,
+	}
+}
+
+func (n *varPlanExpression) Evaluate(currentRow []interface{}) (interface{}, error) {
+	return nil, sql3.NewErrInternalf("this should never be called")
+}
+
+func (n *varPlanExpression) NewBuffer() (types.AggregationBuffer, error) {
+	return NewAggVarBuffer(n), nil
+}
+
+func (n *varPlanExpression) AggType() types.AggregateFunctionType {
+	return types.AGGREGATE_CORR
+}
+
+func (n *varPlanExpression) AggExpression() types.PlanExpression {
+	return n.arg
+}
+
+func (n *varPlanExpression) AggAdditionalExpr() []types.PlanExpression {
+	return []types.PlanExpression{}
+}
+
+func (n *varPlanExpression) Type() parser.ExprDataType {
+	return n.returnDataType
+}
+
+func (n *varPlanExpression) String() string {
+	return fmt.Sprintf("var(%s)", n.arg.String())
+}
+
+func (n *varPlanExpression) Plan() map[string]interface{} {
+	result := make(map[string]interface{})
+	result["_expr"] = fmt.Sprintf("%T", n)
+	result["description"] = n.String()
+	result["dataType"] = n.Type().TypeDescription()
+	result["arg"] = n.arg.Plan()
+	return result
+}
+
+func (n *varPlanExpression) Children() []types.PlanExpression {
+	return []types.PlanExpression{
+		n.arg,
+	}
+}
+
+func (n *varPlanExpression) WithChildren(children ...types.PlanExpression) (types.PlanExpression, error) {
+	if len(children) != 1 {
+		return nil, sql3.NewErrInternalf("unexpected number of children '%d'", len(children))
+	}
+	return newVarPlanExpression(children[0], n.returnDataType), nil
+}
+
 // aggregator for LAST()
 type aggregateLast struct {
 	val  interface{}
