@@ -35,6 +35,7 @@ func (*CommitStatement) node()          {}
 func (*CreateIndexStatement) node()     {}
 func (*CreateTableStatement) node()     {}
 func (*CreateFunctionStatement) node()  {}
+func (*CreateModelStatement) node()     {}
 func (*CreateViewStatement) node()      {}
 func (*AlterViewStatement) node()       {}
 func (*DateLit) node()                  {}
@@ -68,6 +69,7 @@ func (*OnConstraint) node()             {}
 func (*OrderingTerm) node()             {}
 func (*OverClause) node()               {}
 func (*ParenExpr) node()                {}
+func (*PredictStatement) node()         {}
 func (*SetLiteralExpr) node()           {}
 func (*ParenSource) node()              {}
 func (*PrimaryKeyConstraint) node()     {}
@@ -111,6 +113,7 @@ func (*CommitStatement) stmt()          {}
 func (*CreateIndexStatement) stmt()     {}
 func (*CreateTableStatement) stmt()     {}
 func (*CreateFunctionStatement) stmt()  {}
+func (*CreateModelStatement) stmt()     {}
 func (*CreateViewStatement) stmt()      {}
 func (*AlterViewStatement) stmt()       {}
 func (*DeleteStatement) stmt()          {}
@@ -118,6 +121,7 @@ func (*DropIndexStatement) stmt()       {}
 func (*DropTableStatement) stmt()       {}
 func (*DropFunctionStatement) stmt()    {}
 func (*DropViewStatement) stmt()        {}
+func (*PredictStatement) stmt()         {}
 func (*ExplainStatement) stmt()         {}
 func (*InsertStatement) stmt()          {}
 func (*ReleaseStatement) stmt()         {}
@@ -2800,6 +2804,64 @@ func (s *DropFunctionStatement) String() string {
 	return buf.String()
 }
 
+type ModelOptionDefinition struct {
+	Name       *Ident // option name
+	OptionExpr Expr   // option expression
+}
+
+type CreateModelStatement struct {
+	Create      Pos    // position of CREATE keyword
+	Model       Pos    // position of MODEL keyword
+	If          Pos    // position of IF keyword
+	IfNot       Pos    // position of NOT keyword after IF
+	IfNotExists Pos    // position of EXISTS keyword after IF NOT
+	Name        *Ident // model name
+	With        Pos    // position of WITH keyword
+
+	Options []*ModelOptionDefinition // options
+
+	As Pos // position of AS keyword
+
+	ModelQuery *SelectStatement // model query
+}
+
+// Clone returns a deep copy of s.
+func (s *CreateModelStatement) Clone() *CreateModelStatement {
+	if s == nil {
+		return nil
+	}
+	other := *s
+	other.Name = s.Name.Clone()
+	other.ModelQuery = s.ModelQuery.Clone()
+	return &other
+}
+
+// String returns the string representation of the statement.
+func (s *CreateModelStatement) String() string {
+	var buf bytes.Buffer
+	buf.WriteString("CREATE MODEL")
+	if s.IfNotExists.IsValid() {
+		buf.WriteString(" IF NOT EXISTS")
+	}
+	fmt.Fprintf(&buf, " %s", s.Name.String())
+
+	if len(s.Options) > 0 {
+		buf.WriteString(" (")
+		for idx, p := range s.Options {
+			if idx > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, "%s %s", p.Name.Name, p.OptionExpr.String())
+		}
+		buf.WriteString(")")
+	}
+
+	buf.WriteString(" AS ")
+	buf.WriteString(s.ModelQuery.String())
+
+	return buf.String()
+}
+
 type BulkInsertMapDefinition struct {
 	Name    *Ident // map name
 	Type    *Type  // data type
@@ -3319,6 +3381,32 @@ func (c *IndexedColumn) String() string {
 		return fmt.Sprintf("%s DESC", c.X.String())
 	}
 	return c.X.String()
+}
+
+type PredictStatement struct {
+	Predict   Pos    // position of PREDICT keyword
+	Using     Pos    // position of USING keyword
+	ModelName *Ident // model name
+
+	InputQuery *SelectStatement // input query
+}
+
+func (c *PredictStatement) Clone() *PredictStatement {
+	if c == nil {
+		return nil
+	}
+	other := *c
+	other.ModelName = c.ModelName.Clone()
+	other.InputQuery = c.InputQuery.Clone()
+	return &other
+}
+
+func (c *PredictStatement) String() string {
+	var buf bytes.Buffer
+
+	fmt.Fprintf(&buf, "PREDICT USING %s", c.ModelName.String())
+	fmt.Fprintf(&buf, " %s", c.InputQuery.String())
+	return buf.String()
 }
 
 type SelectStatement struct {

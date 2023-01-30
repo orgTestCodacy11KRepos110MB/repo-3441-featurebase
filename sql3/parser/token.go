@@ -171,6 +171,7 @@ const (
 	MATCH
 	MAX
 	MIN
+	MODEL
 	NO
 	NOT
 	NOTBETWEEN
@@ -193,6 +194,7 @@ const (
 	PLAN
 	PRAGMA
 	PRECEDING
+	PREDICT
 	PRIMARY
 	QUERY
 	RANGE
@@ -395,6 +397,7 @@ var tokens = [...]string{
 	MATCH:             "MATCH",
 	MAX:               "MAX",
 	MIN:               "MIN",
+	MODEL:             "MODEL",
 	NO:                "NO",
 	NOT:               "NOT",
 	NOTBETWEEN:        "NOTBETWEEN",
@@ -417,6 +420,7 @@ var tokens = [...]string{
 	PLAN:              "PLAN",
 	PRAGMA:            "PRAGMA",
 	PRECEDING:         "PRECEDING",
+	PREDICT:           "PREDICT",
 	PRIMARY:           "PRIMARY",
 	QUERY:             "QUERY",
 	RANGE:             "RANGE",

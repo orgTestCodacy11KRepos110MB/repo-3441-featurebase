@@ -636,6 +636,14 @@ func tryToReplaceGroupByWithPQLAggregate(ctx context.Context, a *ExecutionPlanne
 					return thisNode, true, nil
 				}
 
+				// if the aggregate is not PQL-able bail
+				for _, agg := range thisNode.Aggregates {
+					_, ok := agg.(*corrPlanExpression)
+					if ok {
+						return thisNode, true, nil
+					}
+				}
+
 				ops := make([]*PlanOpPQLAggregate, 0)
 
 				for _, agg := range thisNode.Aggregates {
@@ -784,38 +792,54 @@ func tryToReplaceGroupByWithPQLGroupBy(ctx context.Context, a *ExecutionPlanner,
 	//only do this if we have one TableScanOperator
 	if len(tables) == 1 {
 		return TransformPlanOp(n, func(node types.PlanOperator) (types.PlanOperator, bool, error) {
-			switch n := node.(type) {
+			switch thisNode := node.(type) {
 			case *PlanOpGroupBy:
+				//only do this if we have group by expressions
+				if len(thisNode.GroupByExprs) == 0 {
+					return thisNode, true, nil
+				}
+
 				//table scan
 				table := tables[0]
-				//only do this if we have group by expressions
-				if len(n.GroupByExprs) > 0 {
-					//use a multi group by if more than 1 aggregate
-					if len(n.Aggregates) > 1 {
-						ops := make([]*PlanOpPQLGroupBy, 0)
-						for _, agg := range n.Aggregates {
 
-							aggregable, ok := agg.(types.Aggregable)
-							if !ok {
-								return n, false, sql3.NewErrInternalf("unexpected aggregate function arg type '%T'", agg)
-							}
-							ops = append(ops, NewPlanOpPQLGroupBy(a, table.tableName, n.GroupByExprs, table.filter, aggregable))
+				// if the child of the group by is not the table scan, we bail here too
+				if thisNode.ChildOp != table {
+					return thisNode, true, nil
+				}
+
+				// if the aggregate is not PQL-able bail
+				for _, agg := range thisNode.Aggregates {
+					_, ok := agg.(*corrPlanExpression)
+					if ok {
+						return thisNode, true, nil
+					}
+				}
+
+				//use a multi group by if more than 1 aggregate
+				if len(thisNode.Aggregates) > 1 {
+					ops := make([]*PlanOpPQLGroupBy, 0)
+					for _, agg := range thisNode.Aggregates {
+
+						aggregable, ok := agg.(types.Aggregable)
+						if !ok {
+							return thisNode, false, sql3.NewErrInternalf("unexpected aggregate function arg type '%T'", agg)
 						}
-						newOp := NewPlanOpPQLMultiGroupBy(a, ops, n.GroupByExprs)
-						newOp.AddWarning(fmt.Sprintf("Multiple (%d) aggregates referenced in select list will result in multiple group by aggregate queries being executed.", len(ops)))
-						return newOp, false, nil
+						ops = append(ops, NewPlanOpPQLGroupBy(a, table.tableName, thisNode.GroupByExprs, table.filter, aggregable))
 					}
-					//only one aggregate
-					aggregable, ok := n.Aggregates[0].(types.Aggregable)
-					if !ok {
-						return n, false, sql3.NewErrInternalf("unexpected aggregate function arg type '%T'", n.Aggregates[0])
-					}
-					newOp := NewPlanOpPQLGroupBy(a, table.tableName, n.GroupByExprs, table.filter, aggregable)
+					newOp := NewPlanOpPQLMultiGroupBy(a, ops, thisNode.GroupByExprs)
+					newOp.AddWarning(fmt.Sprintf("Multiple (%d) aggregates referenced in select list will result in multiple group by aggregate queries being executed.", len(ops)))
 					return newOp, false, nil
 				}
-				return n, true, nil
+				//only one aggregate
+				aggregable, ok := thisNode.Aggregates[0].(types.Aggregable)
+				if !ok {
+					return thisNode, false, sql3.NewErrInternalf("unexpected aggregate function arg type '%T'", thisNode.Aggregates[0])
+				}
+				newOp := NewPlanOpPQLGroupBy(a, table.tableName, thisNode.GroupByExprs, table.filter, aggregable)
+				return newOp, false, nil
+
 			default:
-				return n, true, nil
+				return thisNode, true, nil
 			}
 		})
 	}

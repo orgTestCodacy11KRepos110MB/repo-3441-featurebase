@@ -85,7 +85,7 @@ func (p *ExecutionPlanner) compileSelectStatement(stmt *parser.SelectStatement, 
 				switch ex := expr.(type) {
 				case *sumPlanExpression, *countPlanExpression, *countDistinctPlanExpression,
 					*avgPlanExpression, *minPlanExpression, *maxPlanExpression,
-					*percentilePlanExpression:
+					*corrPlanExpression, *percentilePlanExpression:
 					ch := ex.Children()
 					// first arg is always the ref
 					aggregateAndGroupByExprs = append(aggregateAndGroupByExprs, ch[0])
@@ -102,7 +102,7 @@ func (p *ExecutionPlanner) compileSelectStatement(stmt *parser.SelectStatement, 
 			switch ex := expr.(type) {
 			case *sumPlanExpression, *countPlanExpression, *countDistinctPlanExpression,
 				*avgPlanExpression, *minPlanExpression, *maxPlanExpression,
-				*percentilePlanExpression:
+				*corrPlanExpression, *percentilePlanExpression:
 				return false
 			case *qualifiedRefPlanExpression:
 				havingReferences = append(havingReferences, ex)
@@ -141,7 +141,7 @@ func (p *ExecutionPlanner) compileSelectStatement(stmt *parser.SelectStatement, 
 				switch ex := expr.(type) {
 				case *sumPlanExpression, *countPlanExpression, *countDistinctPlanExpression,
 					*avgPlanExpression, *minPlanExpression, *maxPlanExpression,
-					*percentilePlanExpression:
+					*corrPlanExpression, *percentilePlanExpression:
 					//return false for these, because thats as far down we want to inspect
 					return false
 				case *qualifiedRefPlanExpression:
@@ -239,7 +239,7 @@ func (p *ExecutionPlanner) gatherExprAggregates(expr types.PlanExpression, aggre
 		switch ex := expr.(type) {
 		case *sumPlanExpression, *countPlanExpression, *countDistinctPlanExpression,
 			*avgPlanExpression, *minPlanExpression, *maxPlanExpression,
-			*percentilePlanExpression:
+			*corrPlanExpression, *percentilePlanExpression:
 			found := false
 			for _, ag := range result {
 				//compare based on string representation

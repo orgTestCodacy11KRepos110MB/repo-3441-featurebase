@@ -107,6 +107,8 @@ func (p *Parser) parseNonExplainStatement() (Statement, error) {
 		return p.parseDropStatement()
 	case SELECT:
 		return p.parseSelectStatement(false, nil)
+	case PREDICT:
+		return p.parsePredictStatement()
 	case INSERT, REPLACE:
 		return p.parseInsertStatement(nil)
 	case UPDATE:
@@ -322,8 +324,10 @@ func (p *Parser) parseCreateStatement() (Statement, error) {
 		return p.parseCreateIndexStatement(pos)*/
 	case FUNCTION:
 		return p.parseCreateFunctionStatement(pos)
+	case MODEL:
+		return p.parseCreateModelStatement(pos)
 	default:
-		return nil, p.errorExpected(pos, tok, "TABLE, VIEW or FUNCTION")
+		return nil, p.errorExpected(pos, tok, "TABLE, VIEW, FUNCTION or MODEL")
 	}
 }
 
@@ -354,6 +358,8 @@ func (p *Parser) parseDropStatement() (Statement, error) {
 		return p.parseDropIndexStatement(pos)*/
 	case FUNCTION:
 		return p.parseDropFunctionStatement(pos)
+	//case MODEL:
+	//	return p.parseDropModelStatement(pos)
 	default:
 		return nil, p.errorExpected(pos, tok, "TABLE, VIEW or FUNCTION")
 	}
@@ -1401,6 +1407,69 @@ func (p *Parser) parseDropFunctionStatement(dropPos Pos) (_ *DropFunctionStateme
 		return &stmt, err
 	}
 
+	return &stmt, nil
+}
+
+func (p *Parser) parseCreateModelStatement(createPos Pos) (_ *CreateModelStatement, err error) {
+	assert(p.peek() == MODEL)
+
+	var stmt CreateModelStatement
+	stmt.Create = createPos
+	stmt.Model, _, _ = p.scan()
+
+	// Parse optional "IF NOT EXISTS".
+	if p.peek() == IF {
+		stmt.If, _, _ = p.scan()
+
+		if p.peek() != NOT {
+			return &stmt, p.errorExpected(p.pos, p.tok, "NOT")
+		}
+		stmt.IfNot, _, _ = p.scan()
+
+		if p.peek() != EXISTS {
+			return &stmt, p.errorExpected(p.pos, p.tok, "EXISTS")
+		}
+		stmt.IfNotExists, _, _ = p.scan()
+	}
+
+	if stmt.Name, err = p.parseIdent("model name"); err != nil {
+		return &stmt, err
+	}
+
+	// options
+	if p.peek() != WITH {
+		return &stmt, p.errorExpected(p.pos, p.tok, "WITH")
+	}
+	stmt.With, _, _ = p.scan()
+
+	stmt.Options = make([]*ModelOptionDefinition, 0)
+	for {
+		option, err := p.parseIdent("model option")
+		if err != nil {
+			return &stmt, err
+		}
+
+		expr, err := p.ParseExpr()
+		if err != nil {
+			return &stmt, err
+		}
+		stmt.Options = append(stmt.Options, &ModelOptionDefinition{
+			Name:       option,
+			OptionExpr: expr,
+		})
+		if p.peek() == AS {
+			break
+		}
+	}
+
+	if p.peek() != AS {
+		return &stmt, p.errorExpected(p.pos, p.tok, "AS")
+	}
+	stmt.As, _, _ = p.scan()
+
+	if stmt.ModelQuery, err = p.parseSelectStatement(false, nil); err != nil {
+		return &stmt, err
+	}
 	return &stmt, nil
 }
 
@@ -2592,6 +2661,26 @@ func (p *Parser) parseTableValuedFunction(ident *Ident) (_ *TableValuedFunction,
 
 	return &cte, nil
 }*/
+
+func (p *Parser) parsePredictStatement() (_ *PredictStatement, err error) {
+	assert(p.peek() == PREDICT)
+
+	var stmt PredictStatement
+	stmt.Predict, _, _ = p.scan()
+	if p.peek() != USING {
+		return &stmt, p.errorExpected(p.pos, p.tok, "USING")
+	}
+	stmt.Using, _, _ = p.scan()
+
+	if stmt.ModelName, err = p.parseIdent("model name"); err != nil {
+		return &stmt, err
+	}
+
+	if stmt.InputQuery, err = p.parseSelectStatement(false, nil); err != nil {
+		return &stmt, err
+	}
+	return &stmt, nil
+}
 
 func (p *Parser) mustParseLiteral() Expr {
 	assert(isLiteralToken(p.tok))

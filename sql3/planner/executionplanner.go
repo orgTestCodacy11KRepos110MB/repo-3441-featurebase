@@ -65,6 +65,8 @@ func (p *ExecutionPlanner) CompilePlan(ctx context.Context, stmt parser.Statemen
 	switch stmt := stmt.(type) {
 	case *parser.SelectStatement:
 		rootOperator, err = p.compileSelectStatement(stmt, false)
+	case *parser.PredictStatement:
+		rootOperator, err = p.compilePredictStatement(stmt)
 	case *parser.ShowTablesStatement:
 		rootOperator, err = p.compileShowTablesStatement(stmt)
 	case *parser.ShowColumnsStatement:
@@ -89,6 +91,9 @@ func (p *ExecutionPlanner) CompilePlan(ctx context.Context, stmt parser.Statemen
 		rootOperator, err = p.compileBulkInsertStatement(stmt)
 	case *parser.DeleteStatement:
 		rootOperator, err = p.compileDeleteStatement(stmt)
+	case *parser.CreateModelStatement:
+		rootOperator, err = p.compileCreateModelStatement(stmt)
+
 	default:
 		return nil, sql3.NewErrInternalf("cannot plan statement: %T", stmt)
 	}
@@ -118,6 +123,8 @@ func (p *ExecutionPlanner) analyzePlan(stmt parser.Statement) error {
 	case *parser.SelectStatement:
 		_, err := p.analyzeSelectStatement(stmt)
 		return err
+	case *parser.PredictStatement:
+		return p.analyzePredictStatement(stmt)
 	case *parser.ShowTablesStatement:
 		return nil
 	case *parser.ShowColumnsStatement:
@@ -142,6 +149,9 @@ func (p *ExecutionPlanner) analyzePlan(stmt parser.Statement) error {
 		return p.analyzeBulkInsertStatement(stmt)
 	case *parser.DeleteStatement:
 		return p.analyzeDeleteStatement(stmt)
+	case *parser.CreateModelStatement:
+		return p.analyzeCreateModelStatement(stmt)
+
 	default:
 		return sql3.NewErrInternalf("cannot analyze statement: %T", stmt)
 	}
